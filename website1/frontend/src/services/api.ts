@@ -4,20 +4,21 @@ import { LOCAL_CATEGORIES, LOCAL_PRODUCTS, LOCAL_FLASH_SALES, LOCAL_REVIEWS } fr
 
 const API_BASE = ((import.meta as any).env?.VITE_API_URL as string) || 'http://localhost:5000/api/v1';
 
-// Direct Neon Cloud SQL Integration for Live HTTPS & Vercel Sync
+// Direct Neon Cloud SQL Integration (Clean single-statement HTTPS execution)
 const NEON_HTTP_ENDPOINT = 'https://ep-soft-grass-ae156iob.c-2.us-east-2.aws.neon.tech/sql';
 const NEON_CONN_STRING = 'postgresql://neondb_owner:npg_aJiIkN92sQmY@ep-soft-grass-ae156iob.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require';
 
 export async function executeNeonQuery(query: string) {
   try {
-    fetch(NEON_HTTP_ENDPOINT, {
+    const res = await fetch(NEON_HTTP_ENDPOINT, {
       method: 'POST',
       headers: {
         'Neon-Connection-String': NEON_CONN_STRING,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({ query })
-    }).catch(() => {});
+    });
+    return await res.json();
   } catch {}
 }
 
@@ -47,7 +48,7 @@ function getLocalCart(): Cart {
     if (raw) return JSON.parse(raw);
   } catch {}
   return {
-    id: 'local_cart',
+    id: 'cart_' + getSessionId().slice(0, 12),
     session_id: getSessionId(),
     items: [],
     subtotal: 0
@@ -70,7 +71,7 @@ function localAddToCart(productId: string, quantity = 1): { success: boolean; ca
     cart.items[existingIndex].quantity += quantity;
   } else if (product) {
     cart.items.push({
-      id: `cart_item_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      id: `ci_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       cart_id: cart.id,
       product_id: productId,
       quantity,
@@ -86,13 +87,13 @@ function localAddToCart(productId: string, quantity = 1): { success: boolean; ca
 
   saveLocalCart(cart);
 
-  // Sync with Neon directly
+  // Sync with Neon directly via clean single statements
+  const cartId = cart.id;
+  const sessionId = getSessionId();
+  executeNeonQuery(`INSERT INTO carts (id, session_id) VALUES ('${cartId}', '${sessionId}') ON CONFLICT (session_id) DO NOTHING;`);
+  const cartItemId = `ci_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  executeNeonQuery(`INSERT INTO cart_items (id, cart_id, product_id, quantity) VALUES ('${cartItemId}', '${cartId}', '${productId}', ${quantity});`);
   logTrafficToNeon({ endpoint: '/cart/items', method: 'POST', scenario: 'add_to_cart', productId });
-  const cartSyncQuery = `INSERT INTO carts (id, session_id) VALUES ('${cart.id}', '${getSessionId()}') ON CONFLICT (session_id) DO NOTHING;
-                         INSERT INTO cart_items (id, cart_id, product_id, quantity)
-                         VALUES ('ci_${Date.now()}_${Math.random().toString(36).slice(2, 6)}', '${cart.id}', '${productId}', ${quantity})
-                         ON CONFLICT DO NOTHING;`;
-  executeNeonQuery(cartSyncQuery);
 
   return { success: true, cart };
 }
@@ -103,8 +104,10 @@ function localUpdateCartItem(itemId: string, quantity: number): Cart {
   if (idx > -1) {
     if (quantity <= 0) {
       cart.items.splice(idx, 1);
+      executeNeonQuery(`DELETE FROM cart_items WHERE id = '${itemId}';`);
     } else {
       cart.items[idx].quantity = quantity;
+      executeNeonQuery(`UPDATE cart_items SET quantity = ${quantity} WHERE id = '${itemId}';`);
     }
   }
   cart.subtotal = cart.items.reduce((sum, item) => {
@@ -118,16 +121,7 @@ function localUpdateCartItem(itemId: string, quantity: number): Cart {
 }
 
 function localRemoveFromCart(itemId: string): Cart {
-  const cart = getLocalCart();
-  cart.items = cart.items.filter(i => i.id !== itemId);
-  cart.subtotal = cart.items.reduce((sum, item) => {
-    const p = item.product || LOCAL_PRODUCTS.find(x => x.id === item.product_id);
-    const unitPrice = p ? (p.is_flash_sale && p.flash_sale_price ? p.flash_sale_price : p.price) : 0;
-    return sum + unitPrice * item.quantity;
-  }, 0);
-  saveLocalCart(cart);
-  logTrafficToNeon({ endpoint: `/cart/items/${itemId}`, method: 'DELETE', scenario: 'remove_from_cart' });
-  return cart;
+  return localUpdateCartItem(itemId, 0);
 }
 
 function getLocalWishlist(): WishlistItem[] {
@@ -149,22 +143,20 @@ function localAddToWishlist(productId: string): WishlistItem[] {
   const list = getLocalWishlist();
   if (!list.some(i => i.product_id === productId)) {
     const prod = LOCAL_PRODUCTS.find(p => p.id === productId);
+    const wishId = `wish_${getSessionId().slice(0, 10)}`;
+    const wishItemId = `wi_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     list.push({
-      id: `wish_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      wishlist_id: 'local_wishlist',
+      id: wishItemId,
+      wishlist_id: wishId,
       product_id: productId,
       product: prod
     });
+
+    executeNeonQuery(`INSERT INTO wishlists (id, session_id) VALUES ('${wishId}', '${getSessionId()}') ON CONFLICT (session_id) DO NOTHING;`);
+    executeNeonQuery(`INSERT INTO wishlist_items (id, wishlist_id, product_id) VALUES ('${wishItemId}', '${wishId}', '${productId}') ON CONFLICT DO NOTHING;`);
   }
   saveLocalWishlist(list);
-
   logTrafficToNeon({ endpoint: `/wishlist/${productId}`, method: 'POST', scenario: 'add_wishlist', productId });
-  const wishQuery = `INSERT INTO wishlists (id, session_id) VALUES ('wishlist_local', '${getSessionId()}') ON CONFLICT (session_id) DO NOTHING;
-                     INSERT INTO wishlist_items (id, wishlist_id, product_id)
-                     VALUES ('wi_${Date.now()}_${Math.random().toString(36).slice(2, 6)}', 'wishlist_local', '${productId}')
-                     ON CONFLICT DO NOTHING;`;
-  executeNeonQuery(wishQuery);
-
   return list;
 }
 
@@ -172,6 +164,7 @@ function localRemoveFromWishlist(productId: string): WishlistItem[] {
   let list = getLocalWishlist();
   list = list.filter(i => i.product_id !== productId);
   saveLocalWishlist(list);
+  executeNeonQuery(`DELETE FROM wishlist_items WHERE product_id = '${productId}';`);
   logTrafficToNeon({ endpoint: `/wishlist/${productId}`, method: 'DELETE', scenario: 'remove_wishlist', productId });
   return list;
 }
@@ -553,16 +546,25 @@ export async function submitCheckout(data: {
       const orders: Order[] = ordersRaw ? JSON.parse(ordersRaw) : [];
       orders.unshift(mockOrder);
       localStorage.setItem(LOCAL_ORDERS_KEY, JSON.stringify(orders));
-      saveLocalCart({ id: 'local_cart', session_id: getSessionId(), items: [], subtotal: 0 });
+      saveLocalCart({ id: 'cart_' + getSessionId().slice(0, 12), session_id: getSessionId(), items: [], subtotal: 0 });
     } catch {}
 
-    // Direct Neon Database Sync
-    logTrafficToNeon({ endpoint: '/checkout', method: 'POST', scenario: 'order_checkout' });
+    // Direct Neon Database Sync (Clean single SQL statements)
     const safeAddress = JSON.stringify(mockOrder.shipping_address).replace(/'/g, "''");
-    const orderSyncQuery = `INSERT INTO orders (id, order_number, session_id, subtotal, shipping_fee, total, shipping_address, payment_method, status)
-                           VALUES ('${mockOrder.id}', '${mockOrder.order_number}', '${mockOrder.session_id}', ${mockOrder.subtotal}, ${mockOrder.shipping_fee}, ${mockOrder.total}, '${safeAddress}', '${mockOrder.payment_method}', 'confirmed')
-                           ON CONFLICT DO NOTHING;`;
-    executeNeonQuery(orderSyncQuery);
+    executeNeonQuery(`INSERT INTO orders (id, order_number, session_id, subtotal, shipping_fee, total, shipping_address, payment_method, status)
+                     VALUES ('${mockOrder.id}', '${mockOrder.order_number}', '${mockOrder.session_id}', ${mockOrder.subtotal}, ${mockOrder.shipping_fee}, ${mockOrder.total}, '${safeAddress}'::jsonb, '${mockOrder.payment_method}', 'confirmed');`);
+
+    for (const item of currentCart.items) {
+      const prod = item.product || LOCAL_PRODUCTS.find(p => p.id === item.product_id);
+      const prodName = (prod?.name || 'APTS Product').replace(/'/g, "''");
+      const prodImg = (prod?.images?.[0] || '').replace(/'/g, "''");
+      const unitPrice = prod?.price || 999;
+      const oiId = `oi_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      executeNeonQuery(`INSERT INTO order_items (id, order_id, product_id, quantity, price, product_name, product_image)
+                       VALUES ('${oiId}', '${mockOrder.id}', '${item.product_id}', ${item.quantity}, ${unitPrice}, '${prodName}', '${prodImg}');`);
+    }
+
+    logTrafficToNeon({ endpoint: '/checkout', method: 'POST', scenario: 'order_checkout' });
 
     return {
       success: true,
