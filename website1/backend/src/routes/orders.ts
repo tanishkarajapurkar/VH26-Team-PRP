@@ -7,8 +7,8 @@ function getSessionId(req: Request): string {
   return (req.headers['x-session-id'] as string) || (req.query.sessionId as string) || 'anon_session';
 }
 
-// POST /api/v1/checkout
-orderRoutes.post('/checkout', async (req: Request, res: Response) => {
+// Handle checkout for both /api/v1/checkout and /api/v1/orders/checkout
+const handleCheckout = async (req: Request, res: Response) => {
   try {
     const sessionId = getSessionId(req);
     const { shippingAddress, paymentMethod, items } = req.body;
@@ -29,7 +29,10 @@ orderRoutes.post('/checkout', async (req: Request, res: Response) => {
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
-});
+};
+
+orderRoutes.post('/', handleCheckout);
+orderRoutes.post('/checkout', handleCheckout);
 
 // GET /api/v1/orders
 orderRoutes.get('/', async (req: Request, res: Response) => {
