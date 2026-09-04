@@ -1,0 +1,29 @@
+{
+  "name": "amazon-store-system",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Amazon-like Store with Fastify backend, Supabase DB, and Real-Time Traffic Simulator",
+  "scripts": {
+    "dev": "npm run dev --prefix frontend",
+    "backend": "npm run dev --prefix backend",
+    "frontend": "npm run dev --prefix frontend",
+    "dev:backend": "npm run dev --prefix backend",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "simulator": "npm run start --prefix traffic-simulator",
+    "simulator:continuous": "npm run continuous --prefix traffic-simulator",
+    "simulator:surge": "npm run surge --prefix traffic-simulator",
+    "build": "npm run build --prefix backend && npm run build --prefix frontend",
+    "pack-zip": "node scripts/package-zip.js"
+  },
+  "keywords": [
+    "amazon-clone",
+    "fastify",
+    "supabase",
+    "traffic-simulator",
+    "react",
+    "vite",
+    "tailwind"
+  ],
+  "author": "",
+  "license": "MIT"
+}
