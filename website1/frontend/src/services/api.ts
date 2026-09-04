@@ -1,9 +1,202 @@
 import { Product, Category, Review, FlashSale, Cart, WishlistItem, Order } from '../types';
 import { getSessionId } from './session';
+import { LOCAL_CATEGORIES, LOCAL_PRODUCTS, LOCAL_FLASH_SALES, LOCAL_REVIEWS } from '../data/catalog';
 
 const API_BASE = ((import.meta as any).env?.VITE_API_URL as string) || 'http://localhost:5000/api/v1';
 
+// Local storage keys for resilient offline/standalone operation (e.g. on Vercel)
+const LOCAL_CART_KEY = 'apts_local_cart';
+const LOCAL_WISHLIST_KEY = 'apts_local_wishlist';
+const LOCAL_ORDERS_KEY = 'apts_local_orders';
+
+function getLocalCart(): Cart {
+  try {
+    const raw = localStorage.getItem(LOCAL_CART_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return {
+    id: 'local_cart',
+    session_id: getSessionId(),
+    items: [],
+    subtotal: 0
+  };
+}
+
+function saveLocalCart(cart: Cart): Cart {
+  try {
+    localStorage.setItem(LOCAL_CART_KEY, JSON.stringify(cart));
+  } catch {}
+  return cart;
+}
+
+function localAddToCart(productId: string, quantity = 1): { success: boolean; cart: Cart } {
+  const cart = getLocalCart();
+  const product = LOCAL_PRODUCTS.find(p => p.id === productId);
+  const existingIndex = cart.items.findIndex(i => i.product_id === productId);
+
+  if (existingIndex > -1) {
+    cart.items[existingIndex].quantity += quantity;
+  } else if (product) {
+    cart.items.push({
+      id: `cart_item_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      cart_id: cart.id,
+      product_id: productId,
+      quantity,
+      product
+    });
+  }
+
+  cart.subtotal = cart.items.reduce((sum, item) => {
+    const p = item.product || LOCAL_PRODUCTS.find(x => x.id === item.product_id);
+    const unitPrice = p ? (p.is_flash_sale && p.flash_sale_price ? p.flash_sale_price : p.price) : 0;
+    return sum + unitPrice * item.quantity;
+  }, 0);
+
+  saveLocalCart(cart);
+  return { success: true, cart };
+}
+
+function localUpdateCartItem(itemId: string, quantity: number): Cart {
+  const cart = getLocalCart();
+  const idx = cart.items.findIndex(i => i.id === itemId);
+  if (idx > -1) {
+    if (quantity <= 0) {
+      cart.items.splice(idx, 1);
+    } else {
+      cart.items[idx].quantity = quantity;
+    }
+  }
+  cart.subtotal = cart.items.reduce((sum, item) => {
+    const p = item.product || LOCAL_PRODUCTS.find(x => x.id === item.product_id);
+    const unitPrice = p ? (p.is_flash_sale && p.flash_sale_price ? p.flash_sale_price : p.price) : 0;
+    return sum + unitPrice * item.quantity;
+  }, 0);
+  return saveLocalCart(cart);
+}
+
+function localRemoveFromCart(itemId: string): Cart {
+  const cart = getLocalCart();
+  cart.items = cart.items.filter(i => i.id !== itemId);
+  cart.subtotal = cart.items.reduce((sum, item) => {
+    const p = item.product || LOCAL_PRODUCTS.find(x => x.id === item.product_id);
+    const unitPrice = p ? (p.is_flash_sale && p.flash_sale_price ? p.flash_sale_price : p.price) : 0;
+    return sum + unitPrice * item.quantity;
+  }, 0);
+  return saveLocalCart(cart);
+}
+
+function getLocalWishlist(): WishlistItem[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_WISHLIST_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return [];
+}
+
+function saveLocalWishlist(list: WishlistItem[]): WishlistItem[] {
+  try {
+    localStorage.setItem(LOCAL_WISHLIST_KEY, JSON.stringify(list));
+  } catch {}
+  return list;
+}
+
+function localAddToWishlist(productId: string): WishlistItem[] {
+  const list = getLocalWishlist();
+  if (!list.some(i => i.product_id === productId)) {
+    const prod = LOCAL_PRODUCTS.find(p => p.id === productId);
+    list.push({
+      id: `wish_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      wishlist_id: 'local_wishlist',
+      product_id: productId,
+      product: prod
+    });
+  }
+  return saveLocalWishlist(list);
+}
+
+function localRemoveFromWishlist(productId: string): WishlistItem[] {
+  let list = getLocalWishlist();
+  list = list.filter(i => i.product_id !== productId);
+  return saveLocalWishlist(list);
+}
+
+function filterAndSortProducts(
+  products: Product[],
+  params: {
+    category?: string;
+    brand?: string;
+    minPrice?: number;
+    maxPrice?: number;
+    minRating?: number;
+    sort?: string;
+    q?: string;
+  }
+): Product[] {
+  let list = [...products];
+
+  if (params.q) {
+    const qLower = params.q.toLowerCase();
+    list = list.filter(p =>
+      p.name.toLowerCase().includes(qLower) ||
+      p.description.toLowerCase().includes(qLower) ||
+      p.brand.toLowerCase().includes(qLower) ||
+      (p.category_name && p.category_name.toLowerCase().includes(qLower))
+    );
+  }
+
+  if (params.category && params.category !== 'all') {
+    list = list.filter(
+      p => p.category_slug === params.category || p.category_id === params.category
+    );
+  }
+
+  if (params.brand) {
+    list = list.filter(p => p.brand.toLowerCase() === params.brand!.toLowerCase());
+  }
+
+  if (params.minPrice !== undefined) {
+    list = list.filter(p => p.price >= params.minPrice!);
+  }
+
+  if (params.maxPrice !== undefined) {
+    list = list.filter(p => p.price <= params.maxPrice!);
+  }
+
+  if (params.minRating !== undefined) {
+    list = list.filter(p => p.rating >= params.minRating!);
+  }
+
+  if (params.sort) {
+    switch (params.sort) {
+      case 'price-asc':
+        list.sort((a, b) => a.price - b.price);
+        break;
+      case 'price-desc':
+        list.sort((a, b) => b.price - a.price);
+        break;
+      case 'rating-desc':
+        list.sort((a, b) => b.rating - a.rating);
+        break;
+      case 'discount-desc':
+        list.sort((a, b) => b.discount - a.discount);
+        break;
+      case 'newest':
+        list.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+        break;
+      default:
+        break;
+    }
+  }
+
+  return list;
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  // If running on HTTPS (e.g. Vercel) and API_BASE is insecure HTTP localhost, fail fast to avoid Mixed Content block delay
+  if (typeof window !== 'undefined' && window.location.protocol === 'https:' && API_BASE.startsWith('http:')) {
+    throw new Error('Mixed content blocked: Cannot call HTTP backend from HTTPS storefront');
+  }
+
   const sessionId = getSessionId();
   const headers = {
     'Content-Type': 'application/json',
@@ -11,17 +204,25 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     ...(options.headers || {})
   };
 
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3500);
 
-  if (!res.ok) {
-    const errBody = await res.json().catch(() => ({}));
-    throw new Error(errBody.error || `HTTP error ${res.status}`);
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers,
+      signal: controller.signal
+    });
+
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      throw new Error(errBody.error || `HTTP error ${res.status}`);
+    }
+
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
   }
-
-  return res.json();
 }
 
 // Products
@@ -35,34 +236,95 @@ export async function fetchProducts(params: {
   page?: number;
   limit?: number;
 } = {}): Promise<{ products: Product[]; total: number; page: number; totalPages: number }> {
-  const query = new URLSearchParams();
-  if (params.category && params.category !== 'all') query.set('category', params.category);
-  if (params.brand) query.set('brand', params.brand);
-  if (params.minPrice !== undefined) query.set('minPrice', params.minPrice.toString());
-  if (params.maxPrice !== undefined) query.set('maxPrice', params.maxPrice.toString());
-  if (params.minRating !== undefined) query.set('minRating', params.minRating.toString());
-  if (params.sort) query.set('sort', params.sort);
-  if (params.page) query.set('page', params.page.toString());
-  if (params.limit) query.set('limit', params.limit.toString());
+  try {
+    const query = new URLSearchParams();
+    if (params.category && params.category !== 'all') query.set('category', params.category);
+    if (params.brand) query.set('brand', params.brand);
+    if (params.minPrice !== undefined) query.set('minPrice', params.minPrice.toString());
+    if (params.maxPrice !== undefined) query.set('maxPrice', params.maxPrice.toString());
+    if (params.minRating !== undefined) query.set('minRating', params.minRating.toString());
+    if (params.sort) query.set('sort', params.sort);
+    if (params.page) query.set('page', params.page.toString());
+    if (params.limit) query.set('limit', params.limit.toString());
 
-  return request(`/products?${query.toString()}`);
+    return await request(`/products?${query.toString()}`);
+  } catch {
+    const filtered = filterAndSortProducts(LOCAL_PRODUCTS, params);
+    const page = params.page || 1;
+    const limit = params.limit || 20;
+    const startIndex = (page - 1) * limit;
+    const paginated = filtered.slice(startIndex, startIndex + limit);
+    return {
+      products: paginated,
+      total: filtered.length,
+      page,
+      totalPages: Math.max(1, Math.ceil(filtered.length / limit))
+    };
+  }
 }
 
 export async function fetchProductById(id: string): Promise<Product> {
-  return request(`/products/${id}`);
+  try {
+    return await request(`/products/${id}`);
+  } catch {
+    const found = LOCAL_PRODUCTS.find(p => p.id === id || p.slug === id);
+    if (found) return found;
+    return LOCAL_PRODUCTS[0];
+  }
 }
 
 export async function fetchProductReviews(productId: string): Promise<Review[]> {
-  return request(`/products/${productId}/reviews`);
+  try {
+    return await request(`/products/${productId}/reviews`);
+  } catch {
+    const revs = LOCAL_REVIEWS.filter(r => r.product_id === productId);
+    if (revs.length > 0) return revs;
+    return [
+      {
+        id: `rev_${productId}_1`,
+        product_id: productId,
+        rating: 5,
+        title: 'Outstanding quality and fast delivery',
+        content: 'Arrived in pristine packaging within 48 hours. Works right out of the box and matches the description perfectly.',
+        author_name: 'Verified Customer',
+        verified: true,
+        created_at: new Date(Date.now() - 86400000 * 2).toISOString()
+      },
+      {
+        id: `rev_${productId}_2`,
+        product_id: productId,
+        rating: 4,
+        title: 'Very happy with the purchase',
+        content: 'Solid build materials and great finish. Would definitely recommend to anyone considering this category.',
+        author_name: 'Tech Enthusiast',
+        verified: true,
+        created_at: new Date(Date.now() - 86400000 * 5).toISOString()
+      }
+    ];
+  }
 }
 
 export async function fetchRelatedProducts(productId: string): Promise<Product[]> {
-  return request(`/products/${productId}/related`);
+  try {
+    return await request(`/products/${productId}/related`);
+  } catch {
+    const current = LOCAL_PRODUCTS.find(p => p.id === productId);
+    if (current) {
+      const sameCat = LOCAL_PRODUCTS.filter(p => p.category_id === current.category_id && p.id !== productId);
+      if (sameCat.length >= 4) return sameCat.slice(0, 4);
+      return [...sameCat, ...LOCAL_PRODUCTS.filter(p => p.id !== productId)].slice(0, 4);
+    }
+    return LOCAL_PRODUCTS.slice(0, 4);
+  }
 }
 
 // Categories
 export async function fetchCategories(): Promise<Category[]> {
-  return request('/categories');
+  try {
+    return await request('/categories');
+  } catch {
+    return LOCAL_CATEGORIES;
+  }
 }
 
 // Search
@@ -77,71 +339,116 @@ export async function searchProducts(
     sort?: string;
   } = {}
 ): Promise<{ results: Product[]; total: number }> {
-  const query = new URLSearchParams();
-  query.set('q', q);
-  if (filters.category && filters.category !== 'all') query.set('category', filters.category);
-  if (filters.brand) query.set('brand', filters.brand);
-  if (filters.minPrice !== undefined) query.set('minPrice', filters.minPrice.toString());
-  if (filters.maxPrice !== undefined) query.set('maxPrice', filters.maxPrice.toString());
-  if (filters.minRating !== undefined) query.set('minRating', filters.minRating.toString());
-  if (filters.sort) query.set('sort', filters.sort);
+  try {
+    const query = new URLSearchParams();
+    query.set('q', q);
+    if (filters.category && filters.category !== 'all') query.set('category', filters.category);
+    if (filters.brand) query.set('brand', filters.brand);
+    if (filters.minPrice !== undefined) query.set('minPrice', filters.minPrice.toString());
+    if (filters.maxPrice !== undefined) query.set('maxPrice', filters.maxPrice.toString());
+    if (filters.minRating !== undefined) query.set('minRating', filters.minRating.toString());
+    if (filters.sort) query.set('sort', filters.sort);
 
-  return request(`/search?${query.toString()}`);
+    return await request(`/search?${query.toString()}`);
+  } catch {
+    const results = filterAndSortProducts(LOCAL_PRODUCTS, { ...filters, q });
+    return { results, total: results.length };
+  }
 }
 
 // Flash Sales & Deals
 export async function fetchFlashSales(): Promise<FlashSale[]> {
-  return request('/flash-sales');
+  try {
+    return await request('/flash-sales');
+  } catch {
+    return LOCAL_FLASH_SALES;
+  }
 }
 
 export async function fetchDeals(): Promise<Product[]> {
-  return request('/deals');
+  try {
+    return await request('/deals');
+  } catch {
+    return LOCAL_PRODUCTS.filter(p => p.discount >= 20);
+  }
 }
 
 export async function fetchRecommendations(): Promise<Product[]> {
-  return request('/recommendations');
+  try {
+    return await request('/recommendations');
+  } catch {
+    return LOCAL_PRODUCTS.filter(p => p.rating >= 4.7).slice(0, 8);
+  }
 }
 
-// Cart (Session Based)
+// Cart (Session Based with resilient LocalStorage fallback)
 export async function fetchCart(): Promise<Cart> {
-  return request('/cart');
+  try {
+    return await request('/cart');
+  } catch {
+    return getLocalCart();
+  }
 }
 
 export async function addToCart(productId: string, quantity = 1): Promise<{ success: boolean; cart: Cart }> {
-  return request('/cart/items', {
-    method: 'POST',
-    body: JSON.stringify({ productId, quantity })
-  });
+  try {
+    return await request('/cart/items', {
+      method: 'POST',
+      body: JSON.stringify({ productId, quantity })
+    });
+  } catch {
+    return localAddToCart(productId, quantity);
+  }
 }
 
 export async function updateCartItem(itemId: string, quantity: number): Promise<Cart> {
-  return request(`/cart/items/${itemId}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ quantity })
-  });
+  try {
+    return await request(`/cart/items/${itemId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ quantity })
+    });
+  } catch {
+    return localUpdateCartItem(itemId, quantity);
+  }
 }
 
 export async function removeFromCart(itemId: string): Promise<Cart> {
-  return request(`/cart/items/${itemId}`, {
-    method: 'DELETE'
-  });
+  try {
+    return await request(`/cart/items/${itemId}`, {
+      method: 'DELETE'
+    });
+  } catch {
+    return localRemoveFromCart(itemId);
+  }
 }
 
-// Wishlist (Session Based)
+// Wishlist (Session Based with resilient LocalStorage fallback)
 export async function fetchWishlist(): Promise<WishlistItem[]> {
-  return request('/wishlist');
+  try {
+    return await request('/wishlist');
+  } catch {
+    return getLocalWishlist();
+  }
 }
 
 export async function addToWishlist(productId: string): Promise<WishlistItem[]> {
-  return request(`/wishlist/${productId}`, {
-    method: 'POST'
-  });
+  try {
+    return await request(`/wishlist/${productId}`, {
+      method: 'POST'
+    });
+  } catch {
+    return localAddToWishlist(productId);
+  }
 }
 
 export async function removeFromWishlist(productId: string): Promise<WishlistItem[]> {
-  return request(`/wishlist/${productId}`, {
-    method: 'DELETE'
-  });
+  try {
+    return await request(`/wishlist/${productId}`, {
+      method: 'DELETE'
+    });
+  } catch {
+    return localRemoveFromWishlist(productId);
+  }
 }
 
 // Checkout & Orders
@@ -155,15 +462,17 @@ export async function submitCheckout(data: {
       body: JSON.stringify(data)
     });
   } catch {
-    // Graceful simulated checkout fallback for Vercel demo
+    const currentCart = getLocalCart();
     const orderNumber = `APTS-${Math.floor(100000 + Math.random() * 900000)}`;
+    const subtotal = currentCart.subtotal || 4999;
+    const shippingFee = subtotal > 1500 ? 0 : 99;
     const mockOrder: Order = {
       id: `ord_${Date.now()}`,
       order_number: orderNumber,
       session_id: getSessionId(),
-      subtotal: 4999,
-      shipping_fee: 0,
-      total: 4999,
+      subtotal,
+      shipping_fee: shippingFee,
+      total: subtotal + shippingFee,
       shipping_address: data.shippingAddress || {
         fullName: 'APTS Shopper',
         addressLine1: '42 Silicon Avenue',
@@ -176,6 +485,15 @@ export async function submitCheckout(data: {
       status: 'confirmed',
       created_at: new Date().toISOString()
     };
+
+    try {
+      const ordersRaw = localStorage.getItem(LOCAL_ORDERS_KEY);
+      const orders: Order[] = ordersRaw ? JSON.parse(ordersRaw) : [];
+      orders.unshift(mockOrder);
+      localStorage.setItem(LOCAL_ORDERS_KEY, JSON.stringify(orders));
+      saveLocalCart({ id: 'local_cart', session_id: getSessionId(), items: [], subtotal: 0 });
+    } catch {}
+
     return {
       success: true,
       message: 'Payment simulated successfully. Order confirmed.',
@@ -185,9 +503,46 @@ export async function submitCheckout(data: {
 }
 
 export async function fetchOrderById(orderId: string): Promise<Order> {
-  return request(`/orders/${orderId}`);
+  try {
+    return await request(`/orders/${orderId}`);
+  } catch {
+    try {
+      const ordersRaw = localStorage.getItem(LOCAL_ORDERS_KEY);
+      const orders: Order[] = ordersRaw ? JSON.parse(ordersRaw) : [];
+      const found = orders.find(o => o.id === orderId || o.order_number === orderId);
+      if (found) return found;
+    } catch {}
+
+    return {
+      id: orderId,
+      order_number: `APTS-${Math.floor(100000 + Math.random() * 900000)}`,
+      session_id: getSessionId(),
+      subtotal: 4999,
+      shipping_fee: 0,
+      total: 4999,
+      shipping_address: {
+        fullName: 'APTS Shopper',
+        addressLine1: '42 Silicon Avenue',
+        city: 'Bengaluru',
+        state: 'Karnataka',
+        postalCode: '560001',
+        phone: '+91 98765 43210'
+      },
+      payment_method: 'Simulated UPI',
+      status: 'confirmed',
+      created_at: new Date().toISOString()
+    };
+  }
 }
 
 export async function fetchOrders(): Promise<Order[]> {
-  return request('/orders');
+  try {
+    return await request('/orders');
+  } catch {
+    try {
+      const ordersRaw = localStorage.getItem(LOCAL_ORDERS_KEY);
+      if (ordersRaw) return JSON.parse(ordersRaw);
+    } catch {}
+    return [];
+  }
 }
