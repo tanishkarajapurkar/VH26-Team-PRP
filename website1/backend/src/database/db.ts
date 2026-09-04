@@ -71,6 +71,7 @@ export class DatabaseService {
             await client.query(sql);
             console.log('[DB] Applied PostgreSQL schema DDL successfully');
           }
+          await this.seedPostgres(client);
         } catch (schemaErr) {
           console.warn('[DB] Notice while executing schema DDL:', (schemaErr as Error).message);
         } finally {
@@ -516,6 +517,110 @@ export class DatabaseService {
       } catch {
         // Silently ignore async DB insert logging errors to not block response
       }
+    }
+  }
+
+
+  private async seedPostgres(client: pg.PoolClient) {
+    try {
+      const checkRes = await client.query("SELECT COUNT(*) as count FROM products");
+      if (parseInt(checkRes.rows[0].count, 10) > 0) {
+        console.log('[DB] PostgreSQL already contains catalog data (' + checkRes.rows[0].count + ' products); skipping seed.');
+        return;
+      }
+
+      console.log('[DB] Seeding PostgreSQL database with initial catalog...');
+
+      // Seed categories
+      for (const c of SEED_CATEGORIES) {
+        await client.query(
+          `INSERT INTO categories (id, name, slug, parent_id, image, description)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           ON CONFLICT (id) DO NOTHING`,
+          [c.id, c.name, c.slug, c.parent_id, c.image || null, c.description || null]
+        );
+      }
+
+      // Seed products
+      for (const p of SEED_PRODUCTS) {
+        await client.query(
+          `INSERT INTO products (id, name, slug, description, price, original_price, discount, category_id, brand, rating, review_count, stock, status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+           ON CONFLICT (id) DO NOTHING`,
+          [
+            p.id,
+            p.name,
+            p.slug,
+            p.description,
+            p.price,
+            p.original_price || p.price,
+            p.discount || 0,
+            p.category_id,
+            p.brand,
+            p.rating,
+            p.review_count,
+            p.stock,
+            p.status || 'active'
+          ]
+        );
+
+        if (p.images) {
+          for (let i = 0; i < p.images.length; i++) {
+            await client.query(
+              `INSERT INTO product_images (id, product_id, image_url, sort_order)
+               VALUES ($1, $2, $3, $4)
+               ON CONFLICT (id) DO NOTHING`,
+              [`img_${p.id}_${i}`, p.id, p.images[i], i]
+            );
+          }
+        }
+
+        if (p.specifications) {
+          for (const [key, val] of Object.entries(p.specifications)) {
+            await client.query(
+              `INSERT INTO product_specifications (id, product_id, spec_name, spec_value)
+               VALUES ($1, $2, $3, $4)
+               ON CONFLICT (id) DO NOTHING`,
+              [`spec_${p.id}_${key}`, p.id, key, String(val)]
+            );
+          }
+        }
+      }
+
+      // Seed flash sales
+      for (const fs of SEED_FLASH_SALES) {
+        await client.query(
+          `INSERT INTO flash_sales (id, name, start_time, end_time, status)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (id) DO NOTHING`,
+          [fs.id, fs.name, fs.start_time, fs.end_time, fs.status]
+        );
+
+        if (fs.products) {
+          for (const fsp of fs.products) {
+            await client.query(
+              `INSERT INTO flash_sale_products (id, flash_sale_id, product_id, sale_price, stock_limit, sold_count)
+               VALUES ($1, $2, $3, $4, $5, $6)
+               ON CONFLICT (id) DO NOTHING`,
+              [`fsp_${fs.id}_${fsp.id}`, fs.id, fsp.id, fsp.sale_price, fsp.stock_limit, fsp.sold_count]
+            );
+          }
+        }
+      }
+
+      // Seed reviews
+      for (const r of SEED_REVIEWS) {
+        await client.query(
+          `INSERT INTO reviews (id, product_id, rating, title, content, author_name, verified, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           ON CONFLICT (id) DO NOTHING`,
+          [r.id, r.product_id, r.rating, r.title, r.content, r.author_name, r.verified ?? true, r.created_at || new Date().toISOString()]
+        );
+      }
+
+      console.log('[DB] Successfully seeded PostgreSQL with all categories, products, and reviews!');
+    } catch (seedErr) {
+      console.warn('[DB] Notice during PostgreSQL seed:', (seedErr as Error).message);
     }
   }
 
