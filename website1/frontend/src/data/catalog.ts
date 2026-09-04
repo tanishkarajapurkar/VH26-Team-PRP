@@ -730,7 +730,7 @@ export const LOCAL_REVIEWS: Review[] = [
   },
   {
     id: 'rev_105',
-    product_id: 'prod_apts_airpulse_pro',
+    product_id: 'prod_apts_earbuds_pro',
     rating: 4,
     title: 'Great fit and punchy sound',
     content: 'Stays securely in ear during running sessions. The transparency mode sounds very natural.',

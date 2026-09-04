@@ -51,11 +51,13 @@ export class DatabaseService {
     const dbUrl = process.env.DATABASE_URL;
     if (dbUrl) {
       try {
+        const isCloud = dbUrl.includes('neon.tech') || dbUrl.includes('supabase.co') || dbUrl.includes('sslmode=require');
         this.pool = new pg.Pool({
           connectionString: dbUrl,
           max: 20,
           idleTimeoutMillis: 30000,
-          connectionTimeoutMillis: 4000
+          connectionTimeoutMillis: 10000,
+          ssl: isCloud ? { rejectUnauthorized: false } : undefined
         });
 
         // Test connection
