@@ -2,42 +2,12 @@ import { Product, Category, Review, FlashSale, Cart, WishlistItem, Order } from 
 import { getSessionId } from './session';
 import { LOCAL_CATEGORIES, LOCAL_PRODUCTS, LOCAL_FLASH_SALES, LOCAL_REVIEWS } from '../data/catalog';
 
-const API_BASE = ((import.meta as any).env?.VITE_API_URL as string) || 'http://localhost:5000/api/v1';
+// Dynamically use /api/v1 on Vercel production, or http://localhost:5000/api/v1 on local dev
+const API_BASE = typeof window !== 'undefined' && window.location.hostname !== 'localhost'
+  ? '/api/v1'
+  : (((import.meta as any).env?.VITE_API_URL as string) || 'http://localhost:5000/api/v1');
 
-// Direct Neon Cloud SQL Integration (Clean single-statement HTTPS execution)
-const NEON_HTTP_ENDPOINT = 'https://ep-soft-grass-ae156iob.c-2.us-east-2.aws.neon.tech/sql';
-const NEON_CONN_STRING = 'postgresql://neondb_owner:npg_aJiIkN92sQmY@ep-soft-grass-ae156iob.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require';
-
-export async function executeNeonQuery(query: string) {
-  try {
-    const res = await fetch(NEON_HTTP_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Neon-Connection-String': NEON_CONN_STRING,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ query })
-    });
-    return await res.json();
-  } catch {}
-}
-
-export function logTrafficToNeon(event: {
-  endpoint: string;
-  method: string;
-  scenario?: string;
-  productId?: string;
-}) {
-  const id = `te_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-  const sessionId = getSessionId();
-  const responseTime = Math.floor(10 + Math.random() * 25);
-  const q = `INSERT INTO traffic_events (id, timestamp, endpoint, method, status_code, response_time, source, scenario, session_id, product_id)
-             VALUES ('${id}', NOW(), '${event.endpoint}', '${event.method}', 200, ${responseTime}, 'commercial_storefront', ${event.scenario ? `'${event.scenario}'` : 'NULL'}, '${sessionId}', ${event.productId ? `'${event.productId}'` : 'NULL'})
-             ON CONFLICT (id) DO NOTHING;`;
-  executeNeonQuery(q);
-}
-
-// Local storage keys for resilient standalone operation
+// Local storage keys for resilient offline fallback
 const LOCAL_CART_KEY = 'apts_local_cart';
 const LOCAL_WISHLIST_KEY = 'apts_local_wishlist';
 const LOCAL_ORDERS_KEY = 'apts_local_orders';
@@ -86,28 +56,17 @@ function localAddToCart(productId: string, quantity = 1): { success: boolean; ca
   }, 0);
 
   saveLocalCart(cart);
-
-  // Sync with Neon directly via clean single statements
-  const cartId = cart.id;
-  const sessionId = getSessionId();
-  executeNeonQuery(`INSERT INTO carts (id, session_id) VALUES ('${cartId}', '${sessionId}') ON CONFLICT (session_id) DO NOTHING;`);
-  const cartItemId = `ci_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-  executeNeonQuery(`INSERT INTO cart_items (id, cart_id, product_id, quantity) VALUES ('${cartItemId}', '${cartId}', '${productId}', ${quantity});`);
-  logTrafficToNeon({ endpoint: '/cart/items', method: 'POST', scenario: 'add_to_cart', productId });
-
   return { success: true, cart };
 }
 
 function localUpdateCartItem(itemId: string, quantity: number): Cart {
   const cart = getLocalCart();
-  const idx = cart.items.findIndex(i => i.id === itemId);
+  const idx = cart.items.findIndex(i => i.id === itemId || i.product_id === itemId);
   if (idx > -1) {
     if (quantity <= 0) {
       cart.items.splice(idx, 1);
-      executeNeonQuery(`DELETE FROM cart_items WHERE id = '${itemId}';`);
     } else {
       cart.items[idx].quantity = quantity;
-      executeNeonQuery(`UPDATE cart_items SET quantity = ${quantity} WHERE id = '${itemId}';`);
     }
   }
   cart.subtotal = cart.items.reduce((sum, item) => {
@@ -115,9 +74,7 @@ function localUpdateCartItem(itemId: string, quantity: number): Cart {
     const unitPrice = p ? (p.is_flash_sale && p.flash_sale_price ? p.flash_sale_price : p.price) : 0;
     return sum + unitPrice * item.quantity;
   }, 0);
-  saveLocalCart(cart);
-  logTrafficToNeon({ endpoint: `/cart/items/${itemId}`, method: 'PATCH', scenario: 'update_cart_quantity' });
-  return cart;
+  return saveLocalCart(cart);
 }
 
 function localRemoveFromCart(itemId: string): Cart {
@@ -143,30 +100,20 @@ function localAddToWishlist(productId: string): WishlistItem[] {
   const list = getLocalWishlist();
   if (!list.some(i => i.product_id === productId)) {
     const prod = LOCAL_PRODUCTS.find(p => p.id === productId);
-    const wishId = `wish_${getSessionId().slice(0, 10)}`;
-    const wishItemId = `wi_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     list.push({
-      id: wishItemId,
-      wishlist_id: wishId,
+      id: `wish_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      wishlist_id: 'wishlist_local',
       product_id: productId,
       product: prod
     });
-
-    executeNeonQuery(`INSERT INTO wishlists (id, session_id) VALUES ('${wishId}', '${getSessionId()}') ON CONFLICT (session_id) DO NOTHING;`);
-    executeNeonQuery(`INSERT INTO wishlist_items (id, wishlist_id, product_id) VALUES ('${wishItemId}', '${wishId}', '${productId}') ON CONFLICT DO NOTHING;`);
   }
-  saveLocalWishlist(list);
-  logTrafficToNeon({ endpoint: `/wishlist/${productId}`, method: 'POST', scenario: 'add_wishlist', productId });
-  return list;
+  return saveLocalWishlist(list);
 }
 
 function localRemoveFromWishlist(productId: string): WishlistItem[] {
   let list = getLocalWishlist();
   list = list.filter(i => i.product_id !== productId);
-  saveLocalWishlist(list);
-  executeNeonQuery(`DELETE FROM wishlist_items WHERE product_id = '${productId}';`);
-  logTrafficToNeon({ endpoint: `/wishlist/${productId}`, method: 'DELETE', scenario: 'remove_wishlist', productId });
-  return list;
+  return saveLocalWishlist(list);
 }
 
 function filterAndSortProducts(
@@ -241,11 +188,6 @@ function filterAndSortProducts(
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  // If running on HTTPS (e.g. Vercel) and API_BASE is insecure HTTP localhost, fail fast to avoid Mixed Content block delay
-  if (typeof window !== 'undefined' && window.location.protocol === 'https:' && API_BASE.startsWith('http:')) {
-    throw new Error('Mixed content blocked: Cannot call HTTP backend from HTTPS storefront');
-  }
-
   const sessionId = getSessionId();
   const headers = {
     'Content-Type': 'application/json',
@@ -254,7 +196,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   };
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 3500);
+  const timer = setTimeout(() => controller.abort(), 8000);
 
   try {
     const res = await fetch(`${API_BASE}${path}`, {
@@ -274,7 +216,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   }
 }
 
-// Products
+// Products (Queries Neon in production or Express locally, with resilient offline fallback)
 export async function fetchProducts(params: {
   category?: string;
   brand?: string;
@@ -298,7 +240,6 @@ export async function fetchProducts(params: {
 
     return await request(`/products?${query.toString()}`);
   } catch {
-    logTrafficToNeon({ endpoint: '/products', method: 'GET', scenario: 'browse_catalog' });
     const filtered = filterAndSortProducts(LOCAL_PRODUCTS, params);
     const page = params.page || 1;
     const limit = params.limit || 20;
@@ -317,7 +258,6 @@ export async function fetchProductById(id: string): Promise<Product> {
   try {
     return await request(`/products/${id}`);
   } catch {
-    logTrafficToNeon({ endpoint: `/products/${id}`, method: 'GET', scenario: 'view_product', productId: id });
     const found = LOCAL_PRODUCTS.find(p => p.id === id || p.slug === id);
     if (found) return found;
     return LOCAL_PRODUCTS[0];
@@ -340,16 +280,6 @@ export async function fetchProductReviews(productId: string): Promise<Review[]> 
         author_name: 'Verified Customer',
         verified: true,
         created_at: new Date(Date.now() - 86400000 * 2).toISOString()
-      },
-      {
-        id: `rev_${productId}_2`,
-        product_id: productId,
-        rating: 4,
-        title: 'Very happy with the purchase',
-        content: 'Solid build materials and great finish. Would definitely recommend to anyone considering this category.',
-        author_name: 'Tech Enthusiast',
-        verified: true,
-        created_at: new Date(Date.now() - 86400000 * 5).toISOString()
       }
     ];
   }
@@ -374,7 +304,6 @@ export async function fetchCategories(): Promise<Category[]> {
   try {
     return await request('/categories');
   } catch {
-    logTrafficToNeon({ endpoint: '/categories', method: 'GET', scenario: 'get_categories' });
     return LOCAL_CATEGORIES;
   }
 }
@@ -403,7 +332,6 @@ export async function searchProducts(
 
     return await request(`/search?${query.toString()}`);
   } catch {
-    logTrafficToNeon({ endpoint: `/search?q=${encodeURIComponent(q)}`, method: 'GET', scenario: 'search_query' });
     const results = filterAndSortProducts(LOCAL_PRODUCTS, { ...filters, q });
     return { results, total: results.length };
   }
@@ -414,7 +342,6 @@ export async function fetchFlashSales(): Promise<FlashSale[]> {
   try {
     return await request('/flash-sales');
   } catch {
-    logTrafficToNeon({ endpoint: '/flash-sales', method: 'GET', scenario: 'flash_sales' });
     return LOCAL_FLASH_SALES;
   }
 }
@@ -435,7 +362,7 @@ export async function fetchRecommendations(): Promise<Product[]> {
   }
 }
 
-// Cart (Session Based with resilient LocalStorage fallback & direct Neon Sync)
+// Cart (Live Neon SQL with fallback)
 export async function fetchCart(): Promise<Cart> {
   try {
     return await request('/cart');
@@ -458,10 +385,11 @@ export async function addToCart(productId: string, quantity = 1): Promise<{ succ
 
 export async function updateCartItem(itemId: string, quantity: number): Promise<Cart> {
   try {
-    return await request(`/cart/items/${itemId}`, {
+    await request(`/cart/items/${itemId}`, {
       method: 'PATCH',
       body: JSON.stringify({ quantity })
     });
+    return await fetchCart();
   } catch {
     return localUpdateCartItem(itemId, quantity);
   }
@@ -469,15 +397,16 @@ export async function updateCartItem(itemId: string, quantity: number): Promise<
 
 export async function removeFromCart(itemId: string): Promise<Cart> {
   try {
-    return await request(`/cart/items/${itemId}`, {
+    await request(`/cart/items/${itemId}`, {
       method: 'DELETE'
     });
+    return await fetchCart();
   } catch {
     return localRemoveFromCart(itemId);
   }
 }
 
-// Wishlist (Session Based with resilient LocalStorage fallback & direct Neon Sync)
+// Wishlist
 export async function fetchWishlist(): Promise<WishlistItem[]> {
   try {
     return await request('/wishlist');
@@ -488,9 +417,10 @@ export async function fetchWishlist(): Promise<WishlistItem[]> {
 
 export async function addToWishlist(productId: string): Promise<WishlistItem[]> {
   try {
-    return await request(`/wishlist/${productId}`, {
+    await request(`/wishlist/${productId}`, {
       method: 'POST'
     });
+    return await fetchWishlist();
   } catch {
     return localAddToWishlist(productId);
   }
@@ -498,24 +428,26 @@ export async function addToWishlist(productId: string): Promise<WishlistItem[]> 
 
 export async function removeFromWishlist(productId: string): Promise<WishlistItem[]> {
   try {
-    return await request(`/wishlist/${productId}`, {
+    await request(`/wishlist/${productId}`, {
       method: 'DELETE'
     });
+    return await fetchWishlist();
   } catch {
     return localRemoveFromWishlist(productId);
   }
 }
 
-// Checkout & Orders
+// Checkout & Orders (Inserts live into Neon orders table)
 export async function submitCheckout(data: {
   shippingAddress: any;
   paymentMethod: string;
 }): Promise<{ success: boolean; message: string; order: Order }> {
   try {
-    return await request('/checkout', {
+    const res = await request<{ success: boolean; message: string; order: Order }>('/checkout', {
       method: 'POST',
       body: JSON.stringify(data)
     });
+    return res;
   } catch {
     const currentCart = getLocalCart();
     const orderNumber = `APTS-${Math.floor(100000 + Math.random() * 900000)}`;
@@ -549,23 +481,6 @@ export async function submitCheckout(data: {
       saveLocalCart({ id: 'cart_' + getSessionId().slice(0, 12), session_id: getSessionId(), items: [], subtotal: 0 });
     } catch {}
 
-    // Direct Neon Database Sync (Clean single SQL statements)
-    const safeAddress = JSON.stringify(mockOrder.shipping_address).replace(/'/g, "''");
-    executeNeonQuery(`INSERT INTO orders (id, order_number, session_id, subtotal, shipping_fee, total, shipping_address, payment_method, status)
-                     VALUES ('${mockOrder.id}', '${mockOrder.order_number}', '${mockOrder.session_id}', ${mockOrder.subtotal}, ${mockOrder.shipping_fee}, ${mockOrder.total}, '${safeAddress}'::jsonb, '${mockOrder.payment_method}', 'confirmed');`);
-
-    for (const item of currentCart.items) {
-      const prod = item.product || LOCAL_PRODUCTS.find(p => p.id === item.product_id);
-      const prodName = (prod?.name || 'APTS Product').replace(/'/g, "''");
-      const prodImg = (prod?.images?.[0] || '').replace(/'/g, "''");
-      const unitPrice = prod?.price || 999;
-      const oiId = `oi_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-      executeNeonQuery(`INSERT INTO order_items (id, order_id, product_id, quantity, price, product_name, product_image)
-                       VALUES ('${oiId}', '${mockOrder.id}', '${item.product_id}', ${item.quantity}, ${unitPrice}, '${prodName}', '${prodImg}');`);
-    }
-
-    logTrafficToNeon({ endpoint: '/checkout', method: 'POST', scenario: 'order_checkout' });
-
     return {
       success: true,
       message: 'Payment simulated successfully. Order confirmed.',
@@ -578,13 +493,6 @@ export async function fetchOrderById(orderId: string): Promise<Order> {
   try {
     return await request(`/orders/${orderId}`);
   } catch {
-    try {
-      const ordersRaw = localStorage.getItem(LOCAL_ORDERS_KEY);
-      const orders: Order[] = ordersRaw ? JSON.parse(ordersRaw) : [];
-      const found = orders.find(o => o.id === orderId || o.order_number === orderId);
-      if (found) return found;
-    } catch {}
-
     return {
       id: orderId,
       order_number: `APTS-${Math.floor(100000 + Math.random() * 900000)}`,
