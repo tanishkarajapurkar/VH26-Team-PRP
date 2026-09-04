@@ -6,26 +6,31 @@ import { LOCAL_CATEGORIES, LOCAL_PRODUCTS, LOCAL_FLASH_SALES, LOCAL_REVIEWS } fr
 const NEON_SQL_URL = 'https://ep-soft-grass-ae156iob.c-2.us-east-2.aws.neon.tech/sql';
 const NEON_CONN = 'postgresql://neondb_owner:npg_aJiIkN92sQmY@ep-soft-grass-ae156iob.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require';
 
-export async function queryNeon(sql: string): Promise<any> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 6000);
-  try {
-    const res = await fetch(NEON_SQL_URL, {
-      method: 'POST',
-      headers: {
-        'Neon-Connection-String': NEON_CONN,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ query: sql }),
-      signal: controller.signal
-    });
-    const data = await res.json();
-    if (data.message && data.severity === 'ERROR') {
-      throw new Error(data.message);
+export async function queryNeon(sql: string, retries = 2): Promise<any> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 7000);
+    try {
+      const res = await fetch(NEON_SQL_URL, {
+        method: 'POST',
+        headers: {
+          'Neon-Connection-String': NEON_CONN,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ query: sql }),
+        signal: controller.signal
+      });
+      clearTimeout(timer);
+      const data = await res.json();
+      if (data.message && data.severity === 'ERROR') {
+        throw new Error(data.message);
+      }
+      return data;
+    } catch (err) {
+      clearTimeout(timer);
+      if (attempt === retries) throw err;
+      await new Promise(r => setTimeout(r, 400 * (attempt + 1)));
     }
-    return data;
-  } finally {
-    clearTimeout(timer);
   }
 }
 
