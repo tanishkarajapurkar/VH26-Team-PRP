@@ -1,0 +1,22 @@
+{
+  "name": "apts-traffic-simulator",
+  "version": "1.0.0",
+  "description": "Realistic headless e-commerce workload generator & idle detector for CacheX",
+  "main": "src/simulator.ts",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/simulator.ts",
+    "low": "tsx src/simulator.ts --mode=low",
+    "normal": "tsx src/simulator.ts --mode=normal",
+    "high": "tsx src/simulator.ts --mode=high",
+    "surge": "tsx src/simulator.ts --mode=surge",
+    "flash": "tsx src/simulator.ts --mode=flash_sale",
+    "auto": "tsx src/simulator.ts --auto-idle=true"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^20.12.12",
+    "tsx": "^4.10.5",
+    "typescript": "^5.4.5"
+  }
+}
