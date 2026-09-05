@@ -1,0 +1,14 @@
+{
+  "name": "apexmart-storefront-platform",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ApexMart Obsidian Dark Amazon Storefront with Fastify, Supabase & Traffic Simulator",
+  "scripts": {
+    "setup": "cd backend && npm install && cd ../frontend && npm install",
+    "backend": "cd backend && npm run dev",
+    "frontend": "cd frontend && npm run dev",
+    "simulate": "cd backend && npm run simulate",
+    "surge": "cd backend && npm run surge"
+  },
+  "keywords": ["ecommerce", "amazon-clone", "supabase", "fastify", "react", "traffic-simulator"]
+}

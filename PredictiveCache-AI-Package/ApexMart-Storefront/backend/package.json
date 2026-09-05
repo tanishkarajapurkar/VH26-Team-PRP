@@ -1,0 +1,25 @@
+{
+  "name": "apexmart-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "ApexMart Amazon Storefront Fastify Backend with Supabase & Traffic Simulator",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "simulate": "tsx src/simulator/trafficSimulator.ts",
+    "surge": "tsx src/simulator/trafficSimulator.ts --surge",
+    "build": "tsc",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "fastify": "^4.26.1",
+    "@fastify/cors": "^8.5.0",
+    "@supabase/supabase-js": "^2.39.8",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.20",
+    "tsx": "^4.7.1",
+    "typescript": "^5.3.3"
+  }
+}
